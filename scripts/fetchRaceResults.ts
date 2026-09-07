@@ -2,6 +2,7 @@ import { Course, Grade } from "@prisma/client";
 import * as cheerio from "cheerio";
 import { match } from "ts-pattern";
 import { getCurrentRaceScheduleWeek } from "../src/lib/raceScheduleWeek";
+import { getOwnerRevalidatePaths, postRevalidate } from "./lib/revalidate";
 
 type CliOptions = {
   dryRun: boolean;
@@ -25,6 +26,20 @@ type RaceResult = {
   grade: Grade;
   prizes: number[];
   entries: RaceResultEntry[];
+};
+
+type ResultTarget = {
+  horseId: number;
+  horse: {
+    id: number;
+    name: string;
+    url: string;
+    owners: {
+      id: number;
+      seasonId: number;
+      ruleId: number;
+    }[];
+  };
 };
 
 const NETKEIBA_RACE_BASE_URL = "https://race.netkeiba.com";
@@ -74,7 +89,9 @@ const parseArgs = (argv: string[]): CliOptions => {
     }
   }
 
-  options.raceIds.push(...parseCsvOption(process.env.DRY_RUN_RACE_IDS));
+  if (options.dryRun) {
+    options.raceIds.push(...parseCsvOption(process.env.DRY_RUN_RACE_IDS));
+  }
   options.raceIds = [...new Set(options.raceIds)];
 
   return options;
@@ -223,38 +240,6 @@ const getPoint = (result: number, prizes: number[]) => {
   return result > 5 ? 0 : prizes[result - 1] ?? 0;
 };
 
-const postRevalidate = async (paths: string[]) => {
-  const appUrl = process.env.APP_URL;
-  const secret = process.env.REVALIDATE_SECRET;
-  const uniquePaths = [...new Set(paths)];
-
-  if (uniquePaths.length === 0) {
-    return;
-  }
-
-  if (!appUrl || !secret) {
-    console.log("APP_URL or REVALIDATE_SECRET is not set: skipped revalidate");
-    return;
-  }
-
-  const response = await fetch(new URL("/api/revalidate", appUrl), {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-    },
-    body: JSON.stringify({
-      secret,
-      paths: uniquePaths,
-    }),
-  });
-
-  if (!response.ok) {
-    throw new Error(`Failed to revalidate paths: ${response.status} ${response.statusText}`);
-  }
-
-  console.log(`revalidated paths: ${uniquePaths.length}`);
-};
-
 const runDryRun = async (options: CliOptions) => {
   const raceIds = options.maxRaces === null ? options.raceIds : options.raceIds.slice(0, options.maxRaces);
 
@@ -289,23 +274,35 @@ const main = async () => {
     return;
   }
 
-  if (!options.force && !isWithinResultUpdateWindow()) {
+  // --race-ids 指定時はバックフィルモード: 出走予定に依らず指定レースの結果を全アクティブ馬と突き合わせる
+  const isBackfill = options.raceIds.length > 0;
+
+  if (!isBackfill && !options.force && !isWithinResultUpdateWindow()) {
     console.log("outside result update window: skipped");
     return;
   }
 
   const { default: prisma } = await import("../src/lib/prisma");
   disconnectPrisma = () => prisma.$disconnect();
-  const { weekStart } = getCurrentRaceScheduleWeek();
-  const now = new Date();
 
-  const schedules = await prisma.raceSchedule.findMany({
+  const activeOwnersSelect = {
     where: {
-      weekStart,
-      startTime: {
-        not: null,
+      season: {
+        isActive: true,
       },
-      horse: {
+    },
+    select: {
+      id: true,
+      seasonId: true,
+      ruleId: true,
+    },
+  } as const;
+
+  const targetsByRaceId = new Map<string, ResultTarget[]>();
+
+  if (isBackfill) {
+    const horses = await prisma.horse.findMany({
+      where: {
         owners: {
           some: {
             season: {
@@ -314,39 +311,72 @@ const main = async () => {
           },
         },
       },
-    },
-    include: {
-      horse: {
-        select: {
-          id: true,
-          name: true,
-          url: true,
+      select: {
+        id: true,
+        name: true,
+        url: true,
+        owners: activeOwnersSelect,
+      },
+    });
+    const targets = horses.map((horse) => ({ horseId: horse.id, horse }));
+
+    for (const raceId of options.raceIds) {
+      targetsByRaceId.set(raceId, targets);
+    }
+
+    console.log(`backfill race ids: ${options.raceIds.join(", ")}`);
+    console.log(`active horses: ${horses.length}`);
+  } else {
+    const { weekStart } = getCurrentRaceScheduleWeek();
+    const now = new Date();
+
+    const schedules = await prisma.raceSchedule.findMany({
+      where: {
+        weekStart,
+        startTime: {
+          not: null,
+        },
+        horse: {
           owners: {
-            where: {
+            some: {
               season: {
                 isActive: true,
               },
             },
-            select: {
-              id: true,
-              seasonId: true,
-              ruleId: true,
-            },
           },
         },
       },
-    },
-    orderBy: [{ date: "asc" }, { startTime: "asc" }, { raceNumber: "asc" }],
-  });
+      include: {
+        horse: {
+          select: {
+            id: true,
+            name: true,
+            url: true,
+            owners: activeOwnersSelect,
+          },
+        },
+      },
+      orderBy: [{ date: "asc" }, { startTime: "asc" }, { raceNumber: "asc" }],
+    });
 
-  const fetchableSchedules = schedules.filter((schedule) => {
-    return schedule.startTime && isResultFetchable(schedule.date, schedule.startTime, now);
-  });
-  const fetchableRaceIds = [...new Set(fetchableSchedules.map((schedule) => schedule.raceId))];
+    const fetchableSchedules = schedules.filter((schedule) => {
+      return schedule.startTime && isResultFetchable(schedule.date, schedule.startTime, now);
+    });
+
+    for (const schedule of fetchableSchedules) {
+      const targets = targetsByRaceId.get(schedule.raceId) ?? [];
+      targets.push({ horseId: schedule.horseId, horse: schedule.horse });
+      targetsByRaceId.set(schedule.raceId, targets);
+    }
+
+    console.log(`target weekStart: ${weekStart}`);
+    console.log(`fetchable schedules: ${fetchableSchedules.length}`);
+  }
+
   const existingRaces = await prisma.race.findMany({
     where: {
       raceId: {
-        in: fetchableRaceIds,
+        in: [...targetsByRaceId.keys()],
       },
     },
     select: {
@@ -355,15 +385,20 @@ const main = async () => {
     },
   });
   const existingRaceKeys = new Set(existingRaces.map((race) => `${race.horseId}:${race.raceId}`));
-  const unregisteredSchedules = fetchableSchedules.filter((schedule) => {
-    return !existingRaceKeys.has(`${schedule.horseId}:${schedule.raceId}`);
-  });
-  const raceIds = [...new Set(unregisteredSchedules.map((schedule) => schedule.raceId))];
+
+  const unregisteredByRaceId = new Map<string, ResultTarget[]>();
+  for (const [raceId, targets] of targetsByRaceId) {
+    const unregistered = targets.filter((target) => !existingRaceKeys.has(`${target.horseId}:${raceId}`));
+    if (unregistered.length > 0) {
+      unregisteredByRaceId.set(raceId, unregistered);
+    }
+  }
+  const raceIds = [...unregisteredByRaceId.keys()];
   const targetRaceIds = options.maxRaces === null ? raceIds : raceIds.slice(0, options.maxRaces);
 
-  console.log(`target weekStart: ${weekStart}`);
-  console.log(`fetchable schedules: ${fetchableSchedules.length}`);
-  console.log(`unregistered schedules: ${unregisteredSchedules.length}`);
+  console.log(
+    `unregistered targets: ${[...unregisteredByRaceId.values()].reduce((sum, targets) => sum + targets.length, 0)}`
+  );
   console.log(`target races: ${targetRaceIds.length}`);
 
   const failedRaceIds: string[] = [];
@@ -371,7 +406,7 @@ const main = async () => {
   let createdCount = 0;
 
   for (const raceId of targetRaceIds) {
-    const raceSchedules = unregisteredSchedules.filter((schedule) => schedule.raceId === raceId);
+    const raceTargets = unregisteredByRaceId.get(raceId) ?? [];
 
     try {
       const raceResult = await fetchRaceResult(raceId);
@@ -379,12 +414,15 @@ const main = async () => {
         raceResult.entries.map((entry) => [entry.horseExternalId, entry])
       );
 
-      for (const schedule of raceSchedules) {
-        const horseExternalId = extractHorseExternalId(schedule.horse.url);
+      for (const target of raceTargets) {
+        const horseExternalId = extractHorseExternalId(target.horse.url);
         const entry = horseExternalId ? entryByExternalId.get(horseExternalId) : null;
 
         if (!entry) {
-          console.log(`result not found: ${raceId} ${schedule.horse.name}`);
+          // バックフィルでは全アクティブ馬が候補なので、不出走馬のログは出さない
+          if (!isBackfill) {
+            console.log(`result not found: ${raceId} ${target.horse.name}`);
+          }
           continue;
         }
 
@@ -395,7 +433,7 @@ const main = async () => {
             odds: entry.odds,
             point: getPoint(entry.result, raceResult.prizes),
             result: entry.result,
-            horseId: schedule.horseId,
+            horseId: target.horseId,
             date: raceResult.date,
             url: raceResult.url,
             course: raceResult.course,
@@ -404,13 +442,11 @@ const main = async () => {
         });
         createdCount++;
         console.log(
-          `created: ${raceId} ${schedule.horse.name} result=${entry.result} odds=${entry.odds}`
+          `created: ${raceId} ${target.horse.name} result=${entry.result} odds=${entry.odds}`
         );
 
-        for (const owner of schedule.horse.owners) {
-          revalidatePaths.push(`/${owner.seasonId}/${owner.ruleId}`);
-          revalidatePaths.push(`/${owner.seasonId}/${owner.ruleId}/${owner.id}`);
-          revalidatePaths.push(`/${owner.seasonId}/${owner.ruleId}/${owner.id}/${schedule.horseId}`);
+        for (const owner of target.horse.owners) {
+          revalidatePaths.push(...getOwnerRevalidatePaths(owner, target.horseId));
         }
       }
     } catch (error) {
