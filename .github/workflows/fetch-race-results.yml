@@ -8,6 +8,11 @@ on:
         required: false
         type: boolean
         default: false
+      race_ids:
+        description: "Comma-separated netkeiba race ids to backfill (skips the schedule/time-window logic)"
+        required: false
+        type: string
+        default: ""
   schedule:
     # 10:00-18:00 Saturday/Sunday in Asia/Tokyo.
     - cron: "0 1-9 * * 6,0"
@@ -38,8 +43,12 @@ jobs:
         run: npx prisma generate
 
       - name: Fetch race results
+        env:
+          RACE_IDS: ${{ github.event.inputs.race_ids }}
         run: |
-          if [ "${{ github.event.inputs.force }}" = "true" ]; then
+          if [ -n "$RACE_IDS" ]; then
+            npm run fetch:race-results -- --race-ids="$RACE_IDS"
+          elif [ "${{ github.event.inputs.force }}" = "true" ]; then
             npm run fetch:race-results -- --force
           else
             npm run fetch:race-results

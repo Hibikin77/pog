@@ -1,0 +1,66 @@
+name: Sync horses
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Print changes without updating the database"
+        required: false
+        type: boolean
+        default: true
+      horse_ids:
+        description: "Comma-separated horse ids to sync (empty = all active horses)"
+        required: false
+        type: string
+        default: ""
+      set_urls:
+        description: "Comma-separated <horseId>:<url> overrides (e.g. 339:https://db.netkeiba.com/horse/2024108326/)"
+        required: false
+        type: string
+        default: ""
+
+jobs:
+  sync-horses:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      APP_URL: ${{ vars.APP_URL }}
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      REVALIDATE_SECRET: ${{ secrets.REVALIDATE_SECRET }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+
+      - name: Setup Node.js
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Generate Prisma Client
+        run: npx prisma generate
+
+      - name: Sync horses
+        env:
+          DRY_RUN: ${{ github.event.inputs.dry_run }}
+          HORSE_IDS: ${{ github.event.inputs.horse_ids }}
+          SET_URLS: ${{ github.event.inputs.set_urls }}
+        run: |
+          args=()
+          if [ "$DRY_RUN" = "true" ]; then
+            args+=("--dry-run")
+          fi
+          if [ -n "$HORSE_IDS" ]; then
+            args+=("--horse-ids=$HORSE_IDS")
+          fi
+          IFS=',' read -ra overrides <<< "$SET_URLS"
+          for override in "${overrides[@]}"; do
+            if [ -n "$override" ]; then
+              args+=("--set-url=$override")
+            fi
+          done
+          npm run sync:horses -- "${args[@]}"

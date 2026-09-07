@@ -8,6 +8,7 @@
     "fetch:race-schedules": "tsx scripts/fetchRaceSchedules.ts",
     "fetch:race-schedule-odds": "tsx scripts/fetchRaceScheduleOdds.ts",
     "fetch:race-results": "tsx scripts/fetchRaceResults.ts",
+    "sync:horses": "tsx scripts/syncHorses.ts",
     "prebuild": "prisma generate",
     "build": "NODE_TLS_REJECT_UNAUTHORIZED=0 next build",
     "start": "serve out",
