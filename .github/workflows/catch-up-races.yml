@@ -1,0 +1,75 @@
+name: Catch up races
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Print races that would be registered without updating the database"
+        required: false
+        type: boolean
+        default: false
+      horse_ids:
+        description: "Comma-separated horse ids to check (empty = all active horses)"
+        required: false
+        type: string
+        default: ""
+      since:
+        description: "Only races on/after this date (YYYYMMDD). Empty = April 1 of each horse's 2yo year"
+        required: false
+        type: string
+        default: ""
+      max_horses:
+        description: "Stop after this many horses (for testing)"
+        required: false
+        type: string
+        default: ""
+  schedule:
+    # 06:00 Monday in Asia/Tokyo: register last week's JRA/NAR races that are still missing.
+    - cron: "0 21 * * 0"
+
+jobs:
+  catch-up-races:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      APP_URL: ${{ vars.APP_URL }}
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      REVALIDATE_SECRET: ${{ secrets.REVALIDATE_SECRET }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+
+      - name: Setup Node.js
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Generate Prisma Client
+        run: npx prisma generate
+
+      - name: Catch up races
+        env:
+          DRY_RUN: ${{ github.event.inputs.dry_run }}
+          HORSE_IDS: ${{ github.event.inputs.horse_ids }}
+          SINCE: ${{ github.event.inputs.since }}
+          MAX_HORSES: ${{ github.event.inputs.max_horses }}
+        run: |
+          args=()
+          if [ "$DRY_RUN" = "true" ]; then
+            args+=("--dry-run")
+          fi
+          if [ -n "$HORSE_IDS" ]; then
+            args+=("--horse-ids=$HORSE_IDS")
+          fi
+          if [ -n "$SINCE" ]; then
+            args+=("--since=$SINCE")
+          fi
+          if [ -n "$MAX_HORSES" ]; then
+            args+=("--max-horses=$MAX_HORSES")
+          fi
+          npm run catchup:races -- "${args[@]}"
