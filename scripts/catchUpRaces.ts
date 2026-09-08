@@ -206,6 +206,7 @@ const main = async () => {
   );
 
   const targetsByRaceId = new Map<string, RaceTarget[]>();
+  const skippedHorseIds: number[] = [];
   const failedHorseIds: number[] = [];
   let skippedOverseasCount = 0;
   let skippedNoResultCount = 0;
@@ -216,8 +217,9 @@ const main = async () => {
     const since = options.since ?? (externalId ? getDefaultSince(externalId) : null);
 
     if (!externalId || !/^\d+$/.test(externalId) || !since) {
+      // URL 未設定の馬（sync-horses の --set-url で直す対象）は失敗ではなくスキップ扱い
       console.log(`skipped: horse ${horse.id} ${horse.name} has invalid url: ${horse.url}`);
-      failedHorseIds.push(horse.id);
+      skippedHorseIds.push(horse.id);
       continue;
     }
 
@@ -354,6 +356,7 @@ const main = async () => {
   console.log(
     options.dryRun ? `races would create: ${createdCount}` : `created races: ${createdCount}`
   );
+  console.log(`skipped horses (invalid url): ${skippedHorseIds.length}`);
   console.log(`failed horses: ${failedHorseIds.length}`);
   console.log(`failed races: ${failedRaceIds.length}`);
 
