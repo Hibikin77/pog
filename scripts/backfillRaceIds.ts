@@ -1,5 +1,12 @@
 const extractRaceId = (url: string) => {
-  return url.match(/\/race\/([0-9a-zA-Z]+)/)?.[1] ?? null;
+  // 結果ページの URL（.../race/result.html?race_id=xxx）は race_id パラメータを優先する。
+  // パスから取る時は /race/result.html を ID と誤認しないよう12桁に限定する
+  const raceIdParam = url.match(/[?&]race_id=([0-9a-zA-Z]{12})/)?.[1];
+  if (raceIdParam) {
+    return raceIdParam;
+  }
+
+  return url.match(/\/race\/([0-9a-zA-Z]{12})(?:\/|$)/)?.[1] ?? null;
 };
 
 let disconnectPrisma: (() => Promise<void>) | null = null;

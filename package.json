@@ -5,6 +5,7 @@
   "scripts": {
     "dev": "NODE_TLS_REJECT_UNAUTHORIZED=0 next dev",
     "backfill:race-ids": "tsx scripts/backfillRaceIds.ts",
+    "catchup:races": "tsx scripts/catchUpRaces.ts",
     "fetch:race-schedules": "tsx scripts/fetchRaceSchedules.ts",
     "fetch:race-schedule-odds": "tsx scripts/fetchRaceScheduleOdds.ts",
     "fetch:race-results": "tsx scripts/fetchRaceResults.ts",
