@@ -16,6 +16,8 @@ on:
 
 jobs:
   fetch-race-schedule-odds:
+    # Scheduled runs only on the upstream repo; forks have no DATABASE_URL and must not double-write.
+    if: github.event_name != 'schedule' || github.repository == 'mishio-n/pog'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
